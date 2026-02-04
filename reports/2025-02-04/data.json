@@ -1,0 +1,14 @@
+{
+  "timestamp": "2025-02-04T12:30:00",
+  "a_share": {
+    "shanghai": {"change_pct": 0.25, "close": 3285.12},
+    "shenzhen": {"change_pct": -0.35, "close": 10245.68},
+    "chinext": {"change_pct": -0.82, "close": 2156.34}
+  },
+  "nasdaq": {"change_pct": -0.65, "price": 17250.30},
+  "gold": {"change_pct": 0.15, "price_usd": 2035.50},
+  "sectors": {
+    "红利": {"change_pct": 0.62},
+    "AI": {"change_pct": -1.25}
+  }
+}

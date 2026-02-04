@@ -44,7 +44,6 @@ data/*.json
 data/*.xlsx
 
 # Reports (keep directory, ignore files)
-reports/*.md
 reports/*.pdf
 reports/*.html
 
