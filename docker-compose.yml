@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  financial-report:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: financial-report
+    ports:
+      - "8501:8501"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    networks:
+      - report-network
+    
+  # 可选：定时任务服务
+  scheduler:
+    image: mcuadros/ofelia:latest
+    container_name: report-scheduler
+    command: daemon --docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - financial-report
+    labels:
+      ofelia.job-run.report.schedule: "0 12 * * 1-5"
+      ofelia.job-run.report.container: "financial-report"
+      ofelia.job-run.report.command: "python cron_job.py --run-once"
+    networks:
+      - report-network
+
+networks:
+  report-network:
+    driver: bridge
+
+volumes:
+  reports:
+  logs:
+  data:

@@ -1,0 +1,15 @@
+akshare
+yfinance
+pandas
+numpy
+requests
+streamlit
+openai
+pyyaml
+schedule
+aiohttp
+pandas-ta
+plotly
+croniter
+colorama
+python-dateutil

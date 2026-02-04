@@ -1,0 +1,78 @@
+# 每日研报系统配置文件
+
+# OpenAI/DeepSeek API配置
+openai:
+  api_key: "your-api-key-here"
+  base_url: "https://api.openai.com/v1"  # 可替换为其他兼容API
+  model: "gpt-4"
+  temperature: 0.7
+
+# 数据获取配置
+data_sources:
+  # A股数据
+  a_share:
+    source: "akshare"  # 可选: akshare, tushare
+    tushare_token: ""  # 如使用tushare
+    
+  # 纳斯达克数据
+  nasdaq:
+    source: "yfinance"
+    symbols:
+      - "^IXIC"       # 纳斯达克指数
+      - "NQ=F"        # 纳斯达克100期货
+      - "QQQ"         # 纳斯达克100 ETF
+      - "AAPL"
+      - "NVDA"
+      - "MSFT"
+      - "GOOGL"
+      - "AMZN"
+      - "META"
+      - "TSLA"
+    
+  # 红利板块
+  dividend:
+    symbols:
+      - "510880.SS"   # 红利ETF
+      - "515180.SS"   # 红利低波ETF
+      - "512590.SS"   # 中证红利ETF
+    
+  # AI板块
+  ai_sector:
+    a_share:
+      - "人工智能"     # 板块名称
+      - "ChatGPT概念"
+      - "CPO概念"
+    us_stocks:
+      - "NVDA"
+      - "AMD"
+      - "AVGO"
+      - "CRM"
+      - "PLTR"
+    
+  # 黄金
+  gold:
+    symbols:
+      - "GC=F"        # COMEX黄金期货
+      - "518880.SS"   # 黄金ETF
+      - "GLD"         # 黄金ETF(美)
+
+# 报告配置
+report:
+  output_dir: "./reports"
+  template_style: "securities"  # 券商风格
+  language: "zh"
+  
+# 技术指标配置
+technical:
+  ma_periods: [5, 10, 20, 60]
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  
+# 定时任务配置
+schedule:
+  hour: 12
+  minute: 0
+  timezone: "Asia/Shanghai"
+  workdays_only: true
