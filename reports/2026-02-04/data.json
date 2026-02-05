@@ -1,0 +1,48 @@
+{
+  "date": "2026-02-04",
+  "a_share": {
+    "sh_index": {
+      "close": 3270.15,
+      "change": 12.35,
+      "change_pct": 0.38,
+      "volume": 3852
+    },
+    "sz_index": {
+      "close": 10215.2,
+      "change": -28.45,
+      "change_pct": -0.28,
+      "volume": 4521
+    },
+    "cy_index": {
+      "close": 2148.65,
+      "change": -18.32,
+      "change_pct": -0.85,
+      "volume": 1856
+    }
+  },
+  "nasdaq": {
+    "close": 17325.8,
+    "change": -125.4,
+    "change_pct": -0.72
+  },
+  "gold": {
+    "close": 584.5,
+    "change": 2.6,
+    "change_pct": 0.45,
+    "unit": "CNY/g"
+  },
+  "sectors": {
+    "银行": {
+      "change_pct": 1.25
+    },
+    "AI算力": {
+      "change_pct": -2.15
+    },
+    "红利": {
+      "change_pct": 0.95
+    },
+    "黄金": {
+      "change_pct": 0.45
+    }
+  }
+}

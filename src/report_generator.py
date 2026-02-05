@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, List, Any, Optional
+from openai import OpenAI
 
 # --- 关键：解决包内引用问题 ---
 try:
@@ -12,6 +13,7 @@ except (ImportError, ValueError):
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from data_fetcher import data_fetcher
     from technical_analysis import technical_analyzer
+
 
 class ReportGenerator:
     def __init__(self):
