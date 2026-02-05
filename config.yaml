@@ -29,12 +29,18 @@ data_sources:
       - "META"
       - "TSLA"
     
-  # 红利板块
+  # 红利板块 - 标普中国大盘红利低波50指数
   dividend:
-    symbols:
-      - "510880.SS"   # 红利ETF
-      - "515180.SS"   # 红利低波ETF
-      - "512590.SS"   # 中证红利ETF
+    index_code: "SPCQLLVD"  # 标普中国大盘红利低波50指数
+    etf_symbols:
+      - "515180.SS"   # 红利低波ETF（追踪红利低波指数）
+      - "512890.SS"   # 红利低波50ETF
+    stocks:  # 指数权重股
+      - "农业银行"
+      - "中国银行"
+      - "工商银行"
+      - "建设银行"
+      - "交通银行"
     
   # AI板块
   ai_sector:
