@@ -22,6 +22,27 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 强制浅色模式
+st.markdown("""
+<script>
+    // 强制浅色模式
+    localStorage.setItem('stActiveTheme', JSON.stringify({"name": "light", "base": "light"}));
+    // 阻止深色模式切换
+    Object.defineProperty(window, 'matchMedia', {
+        value: (query) => ({
+            matches: false,
+            media: query,
+            onchange: null,
+            addListener: () => {},
+            removeListener: () => {},
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            dispatchEvent: () => {},
+        }),
+    });
+</script>
+""", unsafe_allow_html=True)
+
 # --- 自定义样式 ---
 st.markdown("""
 <style>
