@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-研报生成器
-使用LLM生成券商风格的每日研报 - SiliconFlow API版本
+研报生成器 - SiliconFlow API版本
+使用Kimi-K2-Thinking模型，流式输出
 """
 
 import os
@@ -9,56 +9,19 @@ import sys
 import json
 import yaml
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Generator
 
-# 添加src到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-try:
-    from data_fetcher import data_fetcher
-    from technical_analysis import technical_analyzer
-except ImportError:
-    from src.data_fetcher import data_fetcher
-    from src.technical_analysis import technical_analyzer
 
 
 def get_api_key():
-    """
-    获取API Key，优先级：
-    1. Streamlit secrets (如果在Streamlit环境中)
-    2. 环境变量 SILICONFLOW_API_KEY
-    3. 配置文件中的api_key
-    """
-    # 1. 尝试Streamlit secrets
-    try:
-        import streamlit as st
-        # 在Streamlit环境中运行
-        try:
-            return st.secrets["api_keys"]["silicon_flow"]
-        except (KeyError, FileNotFoundError):
-            pass
-        
-        # 尝试sidebar输入（仅在交互模式下）
-        if hasattr(st, 'sidebar'):
-            try:
-                api_key = st.sidebar.text_input(
-                    "SiliconFlow API Key", 
-                    type="password", 
-                    key="global_api_key_input"
-                )
-                if api_key:
-                    return api_key
-            except:
-                pass
-    except ImportError:
-        pass
-    
-    # 2. 环境变量
+    """获取API Key"""
+    # 环境变量
     env_key = os.getenv("SILICONFLOW_API_KEY")
     if env_key:
         return env_key
     
-    # 3. 配置文件
+    # 配置文件
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.yaml')
     if os.path.exists(config_path):
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -85,21 +48,14 @@ class ReportGenerator:
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
         
-        # 获取API Key - 必须存在，否则报错
+        # 获取API Key
         self.api_key = get_api_key()
         if not self.api_key:
-            raise ValueError(
-                "未找到有效的API Key。请通过以下方式之一配置：\n"
-                "1. 创建 .streamlit/secrets.toml 文件，包含 [api_keys] silicon_flow = 'your-key'\n"
-                "2. 设置环境变量 SILICONFLOW_API_KEY\n"
-                "3. 修改 config.yaml 中的 openai.api_key"
-            )
+            raise ValueError("未找到有效的API Key。请设置 SILICONFLOW_API_KEY 环境变量或在config.yaml中配置。")
         
         # 初始化OpenAI客户端
         try:
             from openai import OpenAI
-            
-            # 优先使用配置文件中的设置，否则使用默认值
             openai_config = self.config.get('openai', {})
             base_url = openai_config.get('base_url', self.DEFAULT_BASE_URL)
             self.model = openai_config.get('model', self.DEFAULT_MODEL)
@@ -108,12 +64,8 @@ class ReportGenerator:
                 api_key=self.api_key,
                 base_url=base_url
             )
-            print(f"✅ API客户端初始化成功")
-            print(f"   模型: {self.model}")
-            print(f"   API端点: {base_url}")
-            
         except ImportError:
-            raise ImportError("openai库未安装，请运行: pip install openai")
+            raise ImportError("openai库未安装")
         
         self.date_str = datetime.now().strftime('%Y-%m-%d')
         self.output_dir = f"reports/{self.date_str}"
@@ -129,7 +81,8 @@ class ReportGenerator:
             "a_share": {},
             "us_stock": {},
             "sectors": {},
-            "gold": {}
+            "dividend_index": {},  # 红利低波50
+            "gold": {}  # AU9999和XAU
         }
         
         # 1. A股主要指数
@@ -148,7 +101,7 @@ class ReportGenerator:
                 }
                 print(f"     {idx_name}: {row['最新价']:.2f} ({row['涨跌幅']:+.2f}%)")
         except Exception as e:
-            print(f"     获取A股指数失败: {e}")
+            print(f"     失败: {e}")
         
         # 2. 美股指数
         print("  - 获取美股指数...")
@@ -174,54 +127,74 @@ class ReportGenerator:
                         }
                         print(f"     {name}: {parts[1]} ({parts[3]}%)")
         except Exception as e:
-            print(f"     获取美股指数失败: {e}")
+            print(f"     失败: {e}")
         
-        # 3. 板块数据 - 使用新浪接口
+        # 3. 板块数据
         print("  - 获取板块数据...")
         try:
-            import requests
-            from bs4 import BeautifulSoup
-            
-            # 使用新浪财经板块数据
-            url = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
-            r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-            if r.status_code == 200:
-                # 解析JS格式数据
-                content = r.text
-                if 'var S_Finance_bankuai_sinaindustry' in content:
-                    # 提取JSON数据
-                    json_start = content.find('{')
-                    json_end = content.rfind('}') + 1
-                    if json_start >= 0 and json_end > json_start:
-                        data_str = content[json_start:json_end]
-                        # 简化为手动解析主要板块
-                        sectors_list = []
-                        for line in data_str.split(','):
-                            if 'new_' in line and ':' in line:
-                                parts = line.split(':')
-                                if len(parts) >= 2:
-                                    sector_info = parts[1].split(',')
-                                    if len(sector_info) >= 5:
-                                        try:
-                                            change = float(sector_info[3])
-                                            sectors_list.append({
-                                                '板块名称': sector_info[1],
-                                                '涨跌幅': change
-                                            })
-                                        except:
-                                            pass
-                        
-                        # 排序获取领涨领跌
-                        sectors_list.sort(key=lambda x: x['涨跌幅'], reverse=True)
-                        data['sectors'] = {
-                            'top_gainers': sectors_list[:10],
-                            'top_losers': sectors_list[-10:][::-1]
-                        }
-                        print(f"     获取到 {len(sectors_list)} 个板块")
+            import akshare as ak
+            df = ak.stock_board_industry_name_em()
+            top_gainers = df.nlargest(10, '涨跌幅')[['板块名称', '涨跌幅']]
+            top_losers = df.nsmallest(10, '涨跌幅')[['板块名称', '涨跌幅']]
+            data['sectors'] = {
+                'top_gainers': top_gainers.to_dict('records'),
+                'top_losers': top_losers.to_dict('records')
+            }
+            print(f"     获取到 {len(df)} 个板块")
         except Exception as e:
-            print(f"     获取板块数据失败: {e}")
+            print(f"     失败: {e}")
         
-        # 保存原始数据
+        # 4. 红利低波50指数成分股
+        print("  - 获取红利低波50成分股...")
+        try:
+            import akshare as ak
+            # 中证红利低波50指数 H30269
+            df = ak.index_stock_cons_weight_csindex(symbol="H30269")
+            # 只保留前20大权重
+            top_weights = df.nlargest(20, '权重')[['成分券代码', '成分券名称', '权重']]
+            data['dividend_index'] = {
+                'name': '中证红利低波50 (H30269)',
+                'top_components': top_weights.to_dict('records')
+            }
+            print(f"     获取到 {len(top_weights)} 只成分股")
+        except Exception as e:
+            print(f"     失败: {e}")
+        
+        # 5. 黄金价格 (AU9999和XAU)
+        print("  - 获取黄金价格...")
+        try:
+            import requests
+            headers = {'Referer': 'https://finance.sina.com.cn'}
+            
+            # AU9999 (上海黄金交易所)
+            url_au = "https://hq.sinajs.cn/list=au0"
+            r_au = requests.get(url_au, headers=headers, timeout=10)
+            if r_au.status_code == 200:
+                content = r_au.text.split('"')[1]
+                parts = content.split(',')
+                if len(parts) >= 3:
+                    data['gold']['AU9999'] = {
+                        'price': float(parts[2]),
+                        'name': 'AU9999'
+                    }
+                    print(f"     AU9999: {parts[2]}")
+            
+            # XAU (国际现货黄金)
+            url_xau = "https://hq.sinajs.cn/list=hf_GC"
+            r_xau = requests.get(url_xau, headers=headers, timeout=10)
+            if r_xau.status_code == 200:
+                content = r_xau.text.split('"')[1]
+                parts = content.split(',')
+                if len(parts) >= 3:
+                    data['gold']['XAU'] = {
+                        'price': float(parts[2]),
+                        'name': 'XAU/USD'
+                    }
+                    print(f"     XAU: {parts[2]}")
+        except Exception as e:
+            print(f"     失败: {e}")
+        
+        # 保存数据
         data_path = f"{self.output_dir}/data_{self.date_str}.json"
         with open(data_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -229,85 +202,13 @@ class ReportGenerator:
         
         return data
 
-    def generate_ai_analysis(self, data: Dict[str, Any]) -> str:
-        """使用SiliconFlow LLM生成AI分析"""
-        print("  - 调用SiliconFlow LLM生成AI分析...")
-        
+    def build_prompt(self, data: Dict[str, Any]) -> str:
+        """构建提示词 - 只包含数据和框架，不引导AI"""
         a_share = data.get('a_share', {})
         us_stock = data.get('us_stock', {})
         sectors = data.get('sectors', {})
-        
-        sh = a_share.get('上证指数', {})
-        sz = a_share.get('深证成指', {})
-        cy = a_share.get('创业板指', {})
-        
-        nasdaq = us_stock.get('纳斯达克', {})
-        
-        gainers = sectors.get('top_gainers', [])
-        losers = sectors.get('top_losers', [])
-        
-        gainer_text = "\n".join([f"- {g.get('板块名称', g.get('name', '-'))}: {g.get('涨跌幅', g.get('change_pct', 0)):+.2f}%" for g in gainers[:5]]) if gainers else "暂无数据"
-        loser_text = "\n".join([f"- {l.get('板块名称', l.get('name', '-'))}: {l.get('涨跌幅', l.get('change_pct', 0)):+.2f}%" for l in losers[:5]]) if losers else "暂无数据"
-        
-        prompt = f"""你是一位资深券商分析师，请基于以下市场数据撰写每日市场观察报告。
-
-【市场数据】
-A股指数：
-- 上证指数: {sh.get('price', 0):.2f} ({sh.get('change_pct', 0):+.2f}%)
-- 深证成指: {sz.get('price', 0):.2f} ({sz.get('change_pct', 0):+.2f}%)
-- 创业板指: {cy.get('price', 0):.2f} ({cy.get('change_pct', 0):+.2f}%)
-
-美股指数：
-- 纳斯达克: {nasdaq.get('price', 0):,.2f} ({nasdaq.get('change_pct', 0):+.2f}%)
-
-领涨板块Top5:
-{gainer_text}
-
-领跌板块Top5:
-{loser_text}
-
-【要求】
-请生成以下内容的AI分析（每部分3-5条要点，基于数据给出专业观点）：
-
-1. **A股大盘分析**：基于指数表现和板块分化，分析市场特征和原因
-2. **美股市场分析**：基于美股表现，分析对A股的影响
-3. **红利板块专题**：标普中国大盘红利低波50指数分析（高股息+低波动特性）
-4. **AI板块分析**：科技成长股分析
-5. **黄金板块分析**：贵金属板块分析
-6. **资金流向分析**：基于板块涨跌分析主力资金流向
-7. **风险提示**：主要风险点
-8. **配置建议**：各板块配置建议（超配/标配/低配）及理由
-
-请用专业券商研报的语气，观点要具体、有数据支撑。"""
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "你是一位资深券商分析师，擅长撰写专业的每日市场观察报告。报告要观点明确、数据支撑、逻辑清晰。"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=4000
-            )
-            
-            ai_content = response.choices[0].message.content
-            print("     ✅ AI分析生成完成")
-            return ai_content
-            
-        except Exception as e:
-            raise RuntimeError(f"LLM调用失败: {e}")
-
-    def generate_report(self, data: Dict[str, Any]) -> str:
-        """生成完整研报"""
-        print("正在生成研报...")
-        
-        # 获取AI分析（必须有API key）
-        ai_analysis = self.generate_ai_analysis(data)
-        
-        a_share = data.get('a_share', {})
-        us_stock = data.get('us_stock', {})
-        sectors = data.get('sectors', {})
+        dividend = data.get('dividend_index', {})
+        gold = data.get('gold', {})
         
         sh = a_share.get('上证指数', {})
         sz = a_share.get('深证成指', {})
@@ -320,81 +221,79 @@ A股指数：
         gainers = sectors.get('top_gainers', [])
         losers = sectors.get('top_losers', [])
         
-        # 构建报告
-        report = f"""# {self.date_str} 每日市场观察
-
-**分析师：FinClaw AI 研究所**  
-**数据时间：{data.get('update_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}**
-
----
-
-## 核心观点
-
-| 市场 | 涨跌 | 关键判断 |
-|------|------|----------|
-| **上证指数** | {sh.get('change_pct', 0):+.2f}% | 震荡调整，金融护盘 |
-| **深证成指** | {sz.get('change_pct', 0):+.2f}% | 成长股承压回调 |
-| **创业板指** | {cy.get('change_pct', 0):+.2f}% | 新能源拖累走弱 |
-| **纳斯达克** | {nasdaq.get('change_pct', 0):+.2f}% | 科技股反弹走强 |
-| **标普500** | {sp500.get('change_pct', 0):+.2f}% | 大盘稳健上行 |
-
----
-
-## A股大盘分析
-
-### 行情回顾
-今日A股三大指数全线收跌。上证指数跌{abs(sh.get('change_pct', 0)):.2f}%收于{sh.get('price', 0):.2f}点；深证成指跌{abs(sz.get('change_pct', 0)):.2f}%收于{sz.get('price', 0):.2f}点；创业板指跌{abs(cy.get('change_pct', 0)):.2f}%收于{cy.get('price', 0):.2f}点。
-
-**关键数据**：
-- 上证指数：{sh.get('price', 0):.2f}点（{sh.get('change_pct', 0):+.2f}%）
-- 深证成指：{sz.get('price', 0):.2f}点（{sz.get('change_pct', 0):+.2f}%）
-- 创业板指：{cy.get('price', 0):.2f}点（{cy.get('change_pct', 0):+.2f}%）
-
-### 板块表现
-**领涨板块**：
-{chr(10).join([f"- {g.get('板块名称', g.get('name', '-'))}：{g.get('涨跌幅', g.get('change_pct', 0)):+.2f}%" for g in (gainers[:5] if gainers else [])]) if gainers else '- 暂无数据'}
-
-**领跌板块**：
-{chr(10).join([f"- {l.get('板块名称', l.get('name', '-'))}：{l.get('涨跌幅', l.get('change_pct', 0)):+.2f}%" for l in (losers[:5] if losers else [])]) if losers else '- 暂无数据'}
-
----
-
-## 美股市场分析
-
-隔夜美股三大指数全线收涨，市场情绪回暖。
-
-| 指数 | 收盘 | 涨跌 | 涨跌幅 |
-|------|------|------|--------|
-| 道琼斯 | {dow.get('price', 0):,.2f} | {dow.get('change', 0):+.2f} | {dow.get('change_pct', 0):+.2f}% |
-| 标普500 | {sp500.get('price', 0):,.2f} | {sp500.get('change', 0):+.2f} | {sp500.get('change_pct', 0):+.2f}% |
-| 纳斯达克 | {nasdaq.get('price', 0):,.2f} | {nasdaq.get('change', 0):+.2f} | {nasdaq.get('change_pct', 0):+.2f}% |
-
----
-
-## AI深度分析
-
-{ai_analysis}
-
----
-
-**免责声明**：本报告仅供参考，不构成投资建议。市场有风险，投资需谨慎。
-
-*生成时间：{datetime.now().strftime('%H:%M:%S')}*
-"""
+        dividend_components = dividend.get('top_components', [])
         
-        return report
+        prompt = f"""今日市场数据：
 
-    def save_report(self, report: str) -> str:
+A股指数：
+上证指数: {sh.get('price', 0):.2f} ({sh.get('change_pct', 0):+.2f}%)
+深证成指: {sz.get('price', 0):.2f} ({sz.get('change_pct', 0):+.2f}%)
+创业板指: {cy.get('price', 0):.2f} ({cy.get('change_pct', 0):+.2f}%)
+
+美股指数：
+道琼斯: {dow.get('price', 0):,.2f} ({dow.get('change_pct', 0):+.2f}%)
+标普500: {sp500.get('price', 0):,.2f} ({sp500.get('change_pct', 0):+.2f}%)
+纳斯达克: {nasdaq.get('price', 0):,.2f} ({nasdaq.get('change_pct', 0):+.2f}%)
+
+行业板块涨跌前5：
+领涨: {', '.join([f"{g.get('板块名称', '-')}({g.get('涨跌幅', 0):+.2f}%)" for g in (gainers[:5] if gainers else [])])}
+领跌: {', '.join([f"{l.get('板块名称', '-')}({l.get('涨跌幅', 0):+.2f}%)" for l in (losers[:5] if losers else [])])}
+
+红利低波50指数成分股（前10大权重）：
+{chr(10).join([f"{c.get('成分券代码', '-')} {c.get('成分券名称', '-')} 权重{c.get('权重', 0):.2f}%" for c in (dividend_components[:10] if dividend_components else [])])}
+
+黄金：
+AU9999: {gold.get('AU9999', {}).get('price', '-')}元/克
+XAU: {gold.get('XAU', {}).get('price', '-')}美元/盎司
+
+请基于以上数据撰写每日市场观察报告，包含：
+1. A股大盘分析
+2. 美股市场分析  
+3. 行业板块分析
+4. 红利低波50指数分析（关注其走势和成分股表现）
+5. AI板块分析
+6. 黄金分析（AU9999和XAU）
+7. 资金流向分析
+8. 风险提示
+9. 配置建议
+
+要求：基于数据给出观点，不要泛泛而谈。"""
+        
+        return prompt
+
+    def generate_ai_analysis_stream(self, data: Dict[str, Any]) -> Generator[str, None, None]:
+        """流式生成AI分析"""
+        prompt = self.build_prompt(data)
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一位资深券商分析师。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=4000,
+                stream=True
+            )
+            
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                    
+        except Exception as e:
+            yield f"\n\n[错误: {e}]"
+
+    def save_report(self, content: str) -> str:
         """保存研报"""
         filepath = f"{self.output_dir}/report.md"
         with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(report)
-        print(f"研报已保存: {filepath}")
+            f.write(content)
         return filepath
 
 
 def main():
-    """主函数 - 用于命令行运行"""
+    """主函数"""
     print("="*60)
     print(f"每日研报生成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*60)
@@ -402,21 +301,67 @@ def main():
     try:
         generator = ReportGenerator()
         data = generator.fetch_all_data()
-        report = generator.generate_report(data)
+        
+        print("\n生成AI分析（流式输出）...")
+        print("-"*60)
+        
+        ai_content = ""
+        for chunk in generator.generate_ai_analysis_stream(data):
+            print(chunk, end='', flush=True)
+            ai_content += chunk
+        
+        print("\n" + "-"*60)
+        
+        # 构建完整报告
+        report = f"""# {generator.date_str} 每日市场观察
+
+**数据时间：{data.get('update_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}**
+
+---
+
+## 市场数据
+
+### A股指数
+| 指数 | 价格 | 涨跌 |
+|------|------|------|
+| 上证指数 | {data.get('a_share', {}).get('上证指数', {}).get('price', 0):.2f} | {data.get('a_share', {}).get('上证指数', {}).get('change_pct', 0):+.2f}% |
+| 深证成指 | {data.get('a_share', {}).get('深证成指', {}).get('price', 0):.2f} | {data.get('a_share', {}).get('深证成指', {}).get('change_pct', 0):+.2f}% |
+| 创业板指 | {data.get('a_share', {}).get('创业板指', {}).get('price', 0):.2f} | {data.get('a_share', {}).get('创业板指', {}).get('change_pct', 0):+.2f}% |
+
+### 美股指数
+| 指数 | 价格 | 涨跌 |
+|------|------|------|
+| 道琼斯 | {data.get('us_stock', {}).get('道琼斯', {}).get('price', 0):,.2f} | {data.get('us_stock', {}).get('道琼斯', {}).get('change_pct', 0):+.2f}% |
+| 标普500 | {data.get('us_stock', {}).get('标普500', {}).get('price', 0):,.2f} | {data.get('us_stock', {}).get('标普500', {}).get('change_pct', 0):+.2f}% |
+| 纳斯达克 | {data.get('us_stock', {}).get('纳斯达克', {}).get('price', 0):,.2f} | {data.get('us_stock', {}).get('纳斯达克', {}).get('change_pct', 0):+.2f}% |
+
+### 黄金
+| 品种 | 价格 |
+|------|------|
+| AU9999 | {data.get('gold', {}).get('AU9999', {}).get('price', '-')}元/克 |
+| XAU | {data.get('gold', {}).get('XAU', {}).get('price', '-')}美元/盎司 |
+
+---
+
+## AI分析
+
+{ai_content}
+
+---
+
+**免责声明**：本报告仅供参考，不构成投资建议。
+
+*生成时间：{datetime.now().strftime('%H:%M:%S')}*
+"""
+        
         filepath = generator.save_report(report)
         
-        print("="*60)
+        print("\n" + "="*60)
         print(f"✅ 研报生成完成: {filepath}")
         print("="*60)
-    except ValueError as e:
-        print("="*60)
-        print(f"❌ 配置错误: {e}")
-        print("="*60)
-        sys.exit(1)
+        
     except Exception as e:
-        print("="*60)
-        print(f"❌ 生成失败: {e}")
-        print("="*60)
+        print(f"\n❌ 失败: {e}")
         sys.exit(1)
 
 
