@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 研报生成器
-使用LLM生成券商风格的每日研报
+使用LLM生成券商风格的每日研报 - SiliconFlow API版本
 """
 
 import os
@@ -22,8 +22,60 @@ except ImportError:
     from src.technical_analysis import technical_analyzer
 
 
+def get_api_key():
+    """
+    获取API Key，优先级：
+    1. Streamlit secrets (如果在Streamlit环境中)
+    2. 环境变量 SILICONFLOW_API_KEY
+    3. 配置文件中的api_key
+    """
+    # 1. 尝试Streamlit secrets
+    try:
+        import streamlit as st
+        # 在Streamlit环境中运行
+        try:
+            return st.secrets["api_keys"]["silicon_flow"]
+        except (KeyError, FileNotFoundError):
+            pass
+        
+        # 尝试sidebar输入（仅在交互模式下）
+        if hasattr(st, 'sidebar'):
+            try:
+                api_key = st.sidebar.text_input(
+                    "SiliconFlow API Key", 
+                    type="password", 
+                    key="global_api_key_input"
+                )
+                if api_key:
+                    return api_key
+            except:
+                pass
+    except ImportError:
+        pass
+    
+    # 2. 环境变量
+    env_key = os.getenv("SILICONFLOW_API_KEY")
+    if env_key:
+        return env_key
+    
+    # 3. 配置文件
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.yaml')
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        openai_config = config.get('openai', {})
+        api_key = openai_config.get('api_key')
+        if api_key and api_key != 'your-api-key-here':
+            return api_key
+    
+    return None
+
+
 class ReportGenerator:
     """研报生成器"""
+    
+    DEFAULT_MODEL = "moonshotai/Kimi-K2-Thinking"
+    DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
     
     def __init__(self, config_path: str = "config.yaml"):
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -33,25 +85,35 @@ class ReportGenerator:
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
         
-        # 初始化OpenAI客户端
-        openai_config = self.config.get('openai', {})
-        # 优先使用环境变量，其次使用配置文件
-        api_key = os.getenv('OPENAI_API_KEY') or openai_config.get('api_key')
+        # 获取API Key - 必须存在，否则报错
+        self.api_key = get_api_key()
+        if not self.api_key:
+            raise ValueError(
+                "未找到有效的API Key。请通过以下方式之一配置：\n"
+                "1. 创建 .streamlit/secrets.toml 文件，包含 [api_keys] silicon_flow = 'your-key'\n"
+                "2. 设置环境变量 SILICONFLOW_API_KEY\n"
+                "3. 修改 config.yaml 中的 openai.api_key"
+            )
         
-        if api_key:
-            try:
-                from openai import OpenAI
-                self.client = OpenAI(
-                    api_key=api_key,
-                    base_url=openai_config.get('base_url', 'https://api.openai.com/v1')
-                )
-                self.model = openai_config.get('model', 'gpt-4o-mini')
-            except ImportError:
-                print("警告: openai库未安装，将使用模板生成报告")
-                self.client = None
-        else:
-            print("警告: 未配置API密钥，将使用模板生成报告")
-            self.client = None
+        # 初始化OpenAI客户端
+        try:
+            from openai import OpenAI
+            
+            # 优先使用配置文件中的设置，否则使用默认值
+            openai_config = self.config.get('openai', {})
+            base_url = openai_config.get('base_url', self.DEFAULT_BASE_URL)
+            self.model = openai_config.get('model', self.DEFAULT_MODEL)
+            
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url=base_url
+            )
+            print(f"✅ API客户端初始化成功")
+            print(f"   模型: {self.model}")
+            print(f"   API端点: {base_url}")
+            
+        except ImportError:
+            raise ImportError("openai库未安装，请运行: pip install openai")
         
         self.date_str = datetime.now().strftime('%Y-%m-%d')
         self.output_dir = f"reports/{self.date_str}"
@@ -114,20 +176,48 @@ class ReportGenerator:
         except Exception as e:
             print(f"     获取美股指数失败: {e}")
         
-        # 3. 板块数据
+        # 3. 板块数据 - 使用新浪接口
         print("  - 获取板块数据...")
         try:
-            import akshare as ak
-            df = ak.stock_board_industry_name_em()
+            import requests
+            from bs4 import BeautifulSoup
             
-            top_gainers = df.nlargest(10, '涨跌幅')[['板块名称', '涨跌幅']]
-            top_losers = df.nsmallest(10, '涨跌幅')[['板块名称', '涨跌幅']]
-            
-            data['sectors'] = {
-                'top_gainers': top_gainers.to_dict('records'),
-                'top_losers': top_losers.to_dict('records')
-            }
-            print(f"     获取到 {len(df)} 个板块")
+            # 使用新浪财经板块数据
+            url = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
+            r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+            if r.status_code == 200:
+                # 解析JS格式数据
+                content = r.text
+                if 'var S_Finance_bankuai_sinaindustry' in content:
+                    # 提取JSON数据
+                    json_start = content.find('{')
+                    json_end = content.rfind('}') + 1
+                    if json_start >= 0 and json_end > json_start:
+                        data_str = content[json_start:json_end]
+                        # 简化为手动解析主要板块
+                        sectors_list = []
+                        for line in data_str.split(','):
+                            if 'new_' in line and ':' in line:
+                                parts = line.split(':')
+                                if len(parts) >= 2:
+                                    sector_info = parts[1].split(',')
+                                    if len(sector_info) >= 5:
+                                        try:
+                                            change = float(sector_info[3])
+                                            sectors_list.append({
+                                                '板块名称': sector_info[1],
+                                                '涨跌幅': change
+                                            })
+                                        except:
+                                            pass
+                        
+                        # 排序获取领涨领跌
+                        sectors_list.sort(key=lambda x: x['涨跌幅'], reverse=True)
+                        data['sectors'] = {
+                            'top_gainers': sectors_list[:10],
+                            'top_losers': sectors_list[-10:][::-1]
+                        }
+                        print(f"     获取到 {len(sectors_list)} 个板块")
         except Exception as e:
             print(f"     获取板块数据失败: {e}")
         
@@ -140,11 +230,9 @@ class ReportGenerator:
         return data
 
     def generate_ai_analysis(self, data: Dict[str, Any]) -> str:
-        """使用LLM生成AI分析"""
-        if not self.client:
-            return self._generate_template_analysis(data)
+        """使用SiliconFlow LLM生成AI分析"""
+        print("  - 调用SiliconFlow LLM生成AI分析...")
         
-        # 构建prompt
         a_share = data.get('a_share', {})
         us_stock = data.get('us_stock', {})
         sectors = data.get('sectors', {})
@@ -158,6 +246,9 @@ class ReportGenerator:
         gainers = sectors.get('top_gainers', [])
         losers = sectors.get('top_losers', [])
         
+        gainer_text = "\n".join([f"- {g.get('板块名称', g.get('name', '-'))}: {g.get('涨跌幅', g.get('change_pct', 0)):+.2f}%" for g in gainers[:5]]) if gainers else "暂无数据"
+        loser_text = "\n".join([f"- {l.get('板块名称', l.get('name', '-'))}: {l.get('涨跌幅', l.get('change_pct', 0)):+.2f}%" for l in losers[:5]]) if losers else "暂无数据"
+        
         prompt = f"""你是一位资深券商分析师，请基于以下市场数据撰写每日市场观察报告。
 
 【市场数据】
@@ -170,19 +261,19 @@ A股指数：
 - 纳斯达克: {nasdaq.get('price', 0):,.2f} ({nasdaq.get('change_pct', 0):+.2f}%)
 
 领涨板块Top5:
-{chr(10).join([f"- {g.get('板块名称', g.get('name', '-'))}: {g.get('涨跌幅', g.get('change_pct', 0)):+.2f}%" for g in gainers[:5]])}
+{gainer_text}
 
 领跌板块Top5:
-{chr(10).join([f"- {l.get('板块名称', l.get('name', '-'))}: {l.get('涨跌幅', l.get('change_pct', 0)):+.2f}%" for l in losers[:5]])}
+{loser_text}
 
 【要求】
 请生成以下内容的AI分析（每部分3-5条要点，基于数据给出专业观点）：
 
 1. **A股大盘分析**：基于指数表现和板块分化，分析市场特征和原因
 2. **美股市场分析**：基于美股表现，分析对A股的影响
-3. **红利板块专题**：银行股表现分析（假设银行板块今日上涨约2%）
-4. **AI板块分析**：科技成长股分析（假设AI算力板块分化震荡）
-5. **黄金板块分析**：贵金属板块分析（假设今日大幅回调约-6%）
+3. **红利板块专题**：银行股表现分析
+4. **AI板块分析**：科技成长股分析
+5. **黄金板块分析**：贵金属板块分析
 6. **资金流向分析**：基于板块涨跌分析主力资金流向
 7. **风险提示**：主要风险点
 8. **配置建议**：各板块配置建议（超配/标配/低配）及理由
@@ -190,7 +281,6 @@ A股指数：
 请用专业券商研报的语气，观点要具体、有数据支撑。"""
 
         try:
-            print("  - 调用LLM生成AI分析...")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -198,93 +288,21 @@ A股指数：
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=3000
+                max_tokens=4000
             )
             
             ai_content = response.choices[0].message.content
-            print("     AI分析生成完成")
+            print("     ✅ AI分析生成完成")
             return ai_content
             
         except Exception as e:
-            print(f"     LLM调用失败: {e}，使用模板生成")
-            return self._generate_template_analysis(data)
-
-    def _generate_template_analysis(self, data: Dict[str, Any]) -> str:
-        """模板分析（当LLM不可用时）"""
-        a_share = data.get('a_share', {})
-        us_stock = data.get('us_stock', {})
-        sectors = data.get('sectors', {})
-        
-        sh = a_share.get('上证指数', {})
-        sz = a_share.get('深证成指', {})
-        cy = a_share.get('创业板指', {})
-        
-        gainers = sectors.get('top_gainers', [])
-        losers = sectors.get('top_losers', [])
-        
-        return f"""## AI分析（基于模板）
-
-### A股大盘分析
-- 今日A股三大指数全线收跌，上证指数跌{abs(sh.get('change_pct', 0)):.2f}%，深成指跌{abs(sz.get('change_pct', 0)):.2f}%，创业板指跌{abs(cy.get('change_pct', 0)):.2f}%
-- 市场呈现明显的风格分化，价值蓝筹强于成长板块
-- 金融板块护盘明显，消费板块受政策预期提振
-- 市场情绪偏谨慎，成交额维持中等水平
-- 短期或维持震荡整理格局
-
-### 美股市场分析
-- 隔夜美股三大指数全线收涨，科技股表现强劲
-- 美联储降息预期升温支撑市场风险偏好
-- 美股反弹对A股情绪形成正面传导
-- 但中美市场走势分化，独立行情特征明显
-
-### 红利板块专题
-- 银行板块今日领涨，成为护盘主力
-- 高股息防御属性在市场调整期凸显价值
-- 银行股平均股息率5-6%，具备配置吸引力
-- 估值处于历史低位，存在修复空间
-- 建议关注国有大行及优质股份行
-
-### AI板块分析
-- AI产业链今日分化，硬件端承压
-- 短期估值偏高，需等待业绩兑现
-- 中期国产算力替代趋势明确
-- 建议逢低布局有订单支撑的光模块龙头
-- 关注华为昇腾生态相关标的
-
-### 黄金板块分析
-- 黄金板块今日大幅回调，领跌全行业
-- 美联储降息预期反复压制金价
-- 避险需求边际下降
-- 短期调整压力仍存，建议观望
-- 中期央行购金支撑逻辑不变
-
-### 资金流向分析
-- 主力资金板块分化明显
-- 银行、消费板块获资金净流入
-- 新能源、有色板块遭资金抛售
-- 北向资金维持净流入态势
-- 市场风险偏好整体中性
-
-### 风险提示
-- 美联储政策转向节奏不确定性
-- 地缘政治风险可能反复
-- 国内经济复苏斜率或低于预期
-- 部分板块估值偏高存在回调风险
-
-### 配置建议
-- **红利（银行）**：超配 - 高股息防御，政策托底
-- **消费**：标配 - 政策刺激预期，估值合理
-- **AI科技**：低配 - 估值偏高，等待回调
-- **黄金/有色**：低配 - 短期调整压力
-- **新能源**：低配 - 产能过剩，业绩承压
-- **现金**：维持20%仓位 - 保留灵活性
-"""
+            raise RuntimeError(f"LLM调用失败: {e}")
 
     def generate_report(self, data: Dict[str, Any]) -> str:
         """生成完整研报"""
         print("正在生成研报...")
         
-        # 获取AI分析
+        # 获取AI分析（必须有API key）
         ai_analysis = self.generate_ai_analysis(data)
         
         a_share = data.get('a_share', {})
@@ -334,10 +352,10 @@ A股指数：
 
 ### 板块表现
 **领涨板块**：
-{chr(10).join([f"- {g.get('板块名称', g.get('name', '-'))}：{g.get('涨跌幅', g.get('change_pct', 0)):+.2f}%" for g in gainers[:5]])}
+{chr(10).join([f"- {g.get('板块名称', g.get('name', '-'))}：{g.get('涨跌幅', g.get('change_pct', 0)):+.2f}%" for g in (gainers[:5] if gainers else [])]) if gainers else '- 暂无数据'}
 
 **领跌板块**：
-{chr(10).join([f"- {l.get('板块名称', l.get('name', '-'))}：{l.get('涨跌幅', l.get('change_pct', 0)):+.2f}%" for l in losers[:5]])}
+{chr(10).join([f"- {l.get('板块名称', l.get('name', '-'))}：{l.get('涨跌幅', l.get('change_pct', 0)):+.2f}%" for l in (losers[:5] if losers else [])]) if losers else '- 暂无数据'}
 
 ---
 
@@ -352,6 +370,8 @@ A股指数：
 | 纳斯达克 | {nasdaq.get('price', 0):,.2f} | {nasdaq.get('change', 0):+.2f} | {nasdaq.get('change_pct', 0):+.2f}% |
 
 ---
+
+## AI深度分析
 
 {ai_analysis}
 
@@ -379,14 +399,25 @@ def main():
     print(f"每日研报生成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*60)
     
-    generator = ReportGenerator()
-    data = generator.fetch_all_data()
-    report = generator.generate_report(data)
-    filepath = generator.save_report(report)
-    
-    print("="*60)
-    print(f"✅ 研报生成完成: {filepath}")
-    print("="*60)
+    try:
+        generator = ReportGenerator()
+        data = generator.fetch_all_data()
+        report = generator.generate_report(data)
+        filepath = generator.save_report(report)
+        
+        print("="*60)
+        print(f"✅ 研报生成完成: {filepath}")
+        print("="*60)
+    except ValueError as e:
+        print("="*60)
+        print(f"❌ 配置错误: {e}")
+        print("="*60)
+        sys.exit(1)
+    except Exception as e:
+        print("="*60)
+        print(f"❌ 生成失败: {e}")
+        print("="*60)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

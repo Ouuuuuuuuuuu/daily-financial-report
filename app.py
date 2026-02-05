@@ -43,6 +43,22 @@ st.markdown("""
 </script>
 """, unsafe_allow_html=True)
 
+# --- API Key 配置 ---
+def get_api_key():
+    """获取SiliconFlow API Key"""
+    # 1. 尝试Streamlit secrets
+    try:
+        return st.secrets["api_keys"]["silicon_flow"]
+    except (KeyError, FileNotFoundError):
+        pass
+    
+    # 2. 环境变量
+    env_key = os.getenv("SILICONFLOW_API_KEY")
+    if env_key:
+        return env_key
+    
+    return None
+
 # --- 自定义样式 ---
 st.markdown("""
 <style>
@@ -409,6 +425,24 @@ def main():
     st.markdown(f'<div class="sub-header">当前北京时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} | FinClaw AI 研究所</div>', unsafe_allow_html=True)
     
     # 侧边栏
+    st.sidebar.title("🔧 配置")
+    
+    # API Key 配置
+    api_key = get_api_key()
+    if not api_key:
+        st.sidebar.warning("⚠️ 未配置API Key")
+        api_key = st.sidebar.text_input(
+            "SiliconFlow API Key", 
+            type="password",
+            help="请输入你的SiliconFlow API Key，或使用secrets.toml配置"
+        )
+        if api_key:
+            os.environ["SILICONFLOW_API_KEY"] = api_key
+            st.sidebar.success("✅ API Key已设置")
+    else:
+        st.sidebar.success("✅ API Key已配置")
+    
+    st.sidebar.markdown("---")
     st.sidebar.title("📅 历史研报")
     reports = get_available_reports()
     
